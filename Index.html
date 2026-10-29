@@ -1,1 +1,310 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wolf Chess</title>
+<style>
+:root{--bg:#101827;--panel:#1c293b;--gold:#f4c15d;--light:#f0d9b5;--dark:#779556}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#fff;font-family:Arial,sans-serif;text-align:center;padding:16px}
+header{padding:10px}
+.logo{font-size:40px}
+h1{margin:4px;color:var(--gold);letter-spacing:2px}
+.sub{color:#b8c5d8;margin:8px 0 20px}
+.app{max-width:540px;margin:auto}
+.panel{background:var(--panel);border-radius:16px;padding:14px;margin-bottom:12px}
+.controls{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+button,select{border:0;border-radius:9px;padding:11px 13px;font-weight:bold;font-size:14px}
+button{background:var(--gold);color:#182033;cursor:pointer}
+button.secondary{background:#33445d;color:white}
+button:disabled{opacity:.4}
+#status{font-weight:bold;min-height:24px;margin:10px 0}
+.board{display:grid;grid-template-columns:repeat(8,1fr);width:100%;aspect-ratio:1;overflow:hidden;border:3px solid #43536a;border-radius:5px}
+.square{position:relative;display:flex;align-items:center;justify-content:center;aspect-ratio:1;padding:0;border-radius:0;font-size:clamp(25px,8vw,48px);line-height:1;background:var(--light);color:#15191f;user-select:none;-webkit-tap-highlight-color:transparent}
+.square.dark{background:var(--dark)}
+.square.whitepiece{color:#fffdf5;text-shadow:0 1px 2px #111,1px 2px 2px #111,-1px -1px 1px #111}
+.square.blackpiece{color:#171717;text-shadow:0 1px 1px #eee}
+.square.selected{background:#f5e663!important}
+.square.move::after{content:"";position:absolute;width:24%;height:24%;border-radius:50%;background:#253d45aa}
+.square.capture::after{content:"";position:absolute;inset:3px;border:4px solid #d33a3a;border-radius:50%}
+.coord{position:absolute;font-size:10px;bottom:2px;left:3px;color:#20202099}
+.history{display:flex;gap:7px;flex-wrap:wrap;justify-content:center;min-height:25px;color:#d8e2f0;font-size:13px}
+select{background:#33445d;color:white}
+footer{font-size:12px;color:#8fa1ba;margin:16px}
+</style>
+</head>
+<body>
+<header>
+<div class="logo">🐺♟️</div>
+<h1>WOLF CHESS</h1>
+<div class="sub">Think like a wolf. Play like a champion.</div>
+</header>
+
+<div class="app">
+<div class="panel">
+<div class="controls">
+<select id="mode" aria-label="Game mode">
+<option value="computer">Play vs Computer</option>
+<option value="local">Two Players</option>
+</select>
+<select id="level" aria-label="Computer difficulty">
+<option value="1">Easy</option>
+<option value="2" selected>Medium</option>
+<option value="3">Hard</option>
+</select>
+</div>
+<div id="status" aria-live="polite">White to move</div>
+<div class="board" id="board"></div>
+<div class="controls" style="margin-top:14px">
+<button onclick="undo()">↶ Undo</button>
+<button onclick="restart()">↻ Restart</button>
+<button class="secondary" onclick="flipBoard()">⇅ Flip Board</button>
+</div>
+</div>
+<div class="panel">
+<strong>Moves</strong>
+<div class="history" id="history">Your game starts here.</div>
+</div>
+<footer>WOLF CHESS • Made for chess lovers 🐺</footer>
+</div>
+
+<script>
+const START="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+const glyph={K:"♔",Q:"♕",R:"♖",B:"♗",N:"♘",P:"♙",k:"♚",q:"♛",r:"♜",b:"♝",n:"♞",p:"♟︎"};
+let board=[],turn="w",castle="KQkq",ep="-",half=0,full=1;
+let selected=-1,targets=[],history=[],snapshots=[],flipped=false,gameOver=false,thinking=false;
+const $=id=>document.getElementById(id);
+const side=p=>!p?null:p===p.toUpperCase()?"w":"b";
+const file=i=>i%8,rank=i=>Math.floor(i/8);
+function loadFen(fen){
+ const f=fen.split(/\s+/);board=[];
+ for(const row of f[0].split("/"))for(const ch of row){
+  if(/[1-8]/.test(ch))for(let n=0;n<+ch;n++)board.push(null);
+  else board.push(ch);
+ }
+ turn=f[1];castle=f[2];ep=f[3];half=+f[4];full=+f[5];
+}
+function fen(){
+ let rows=[];
+ for(let r=0;r<8;r++){let s="",empty=0;for(let c=0;c<8;c++){let p=board[r*8+c];if(!p)empty++;else{if(empty)s+=empty;empty=0;s+=p}}if(empty)s+=empty;rows.push(s)}
+ return rows.join("/")+" "+turn+" "+(castle||"-")+" "+ep+" "+half+" "+full;
+}
+function save(){snapshots.push({fen:fen(),history:history.slice()})}
+function restore(s){loadFen(s.fen);history=s.history.slice();selected=-1;targets=[];gameOver=false;thinking=false;render()}
+function attacked(sq,by){
+ const r=rank(sq),c=file(sq);
+ for(const dc of [-1,1]){
+  const pr=r+(by==="w"?1:-1),pc=c+dc;
+  if(inside(pr,pc)&&board[pr*8+pc]===(by==="w"?"P":"p"))return true;
+ }
+ for(const [dr,dc] of [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]){
+  const rr=r+dr,cc=c+dc;if(inside(rr,cc)&&board[rr*8+cc]===(by==="w"?"N":"n"))return true;
+ }
+ for(const [dr,dc,types] of [[-1,0,"RQ"],[1,0,"RQ"],[0,-1,"RQ"],[0,1,"RQ"],[-1,-1,"BQ"],[-1,1,"BQ"],[1,-1,"BQ"],[1,1,"BQ"]]){
+  let rr=r+dr,cc=c+dc;
+  while(inside(rr,cc)){const p=board[rr*8+cc];if(p){if(side(p)===by&&(types.includes(p.toUpperCase())))return true;break}rr+=dr;cc+=dc}
+ }
+ for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++)if(dr||dc){
+  let rr=r+dr,cc=c+dc;if(inside(rr,cc)&&board[rr*8+cc]===(by==="w"?"K":"k"))return true
+ }
+ return false
+}
+function inside(r,c){return r>=0&&r<8&&c>=0&&c<8}
+function king(color){return board.indexOf(color==="w"?"K":"k")}
+function inCheck(color){const k=king(color);return k<0||attacked(k,color==="w"?"b":"w")}
+function pseudo(){
+ let ms=[];
+ function add(f,t,promo=null,flag=""){ms.push({f,t,promo,flag})}
+ for(let f=0;f<64;f++){
+  const p=board[f];if(!p||side(p)!==turn)continue;
+  const color=turn,r=rank(f),c=file(f),type=p.toLowerCase();
+  const step=color==="w"?-1:1;
+  if(type==="p"){
+   let nr=r+step;
+   if(inside(nr,c)&&!board[nr*8+c]){
+    add(f,nr*8+c,nr===0||nr===7?"q":null);
+    let start=color==="w"?6:1;
+    if(r===start&&!board[(r+2*step)*8+c])add(f,(r+2*step)*8+c,null,"double");
+   }
+   for(const dc of [-1,1]){
+    let rr=r+step,cc=c+dc;if(!inside(rr,cc))continue;
+    let t=rr*8+cc;
+    if(board[t]&&side(board[t])!==color&&board[t].toLowerCase()!=="k")add(f,t,rr===0||rr===7?"q":null);
+    else if(ep!=="-"&&t===parseInt(ep,10))add(f,t,null,"ep");
+   }
+  }else{
+   const dirs=type==="n"?[[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]:
+   type==="k"?[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]:
+   type==="b"?[[-1,-1],[-1,1],[1,-1],[1,1]]:
+   type==="r"?[[-1,0],[1,0],[0,-1],[0,1]]:
+   [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+   for(const [dr,dc] of dirs){
+    let rr=r+dr,cc=c+dc;
+    while(inside(rr,cc)){
+     const t=rr*8+cc;
+     if(!board[t])add(f,t);
+     else{if(side(board[t])!==color&&board[t].toLowerCase()!=="k")add(f,t);break}
+     if(type==="n"||type==="k")break;
+     rr+=dr;cc+=dc
+    }
+   }
+   if(type==="k"&&!inCheck(color)){
+    const home=color==="w"?60:4,enemy=color==="w"?"b":"w";
+    if(f===home){
+     const ks=color==="w"?"K":"k",qs=color==="w"?"Q":"q";
+     if(castle.includes(ks)&&board[home+1]===null&&board[home+2]===null&&board[home+3]===(color==="w"?"R":"r")&&!attacked(home+1,enemy)&&!attacked(home+2,enemy))add(f,home+2,null,"castleK");
+     if(castle.includes(qs)&&board[home-1]===null&&board[home-2]===null&&board[home-3]===null&&board[home-4]===(color==="w"?"R":"r")&&!attacked(home-1,enemy)&&!attacked(home-2,enemy))add(f,home-2,null,"castleQ");
+    }
+   }
+  }
+ }
+ return ms
+}
+function apply(m){
+ const p=board[m.f],captured=board[m.t],color=turn;
+ board[m.t]=m.promo?(color==="w"?m.promo.toUpperCase():m.promo):p;board[m.f]=null;
+ if(m.flag==="ep")board[m.t+(color==="w"?8:-8)]=null;
+ if(m.flag==="castleK"){board[m.t-1]=board[m.t+1];board[m.t+1]=null}
+ if(m.flag==="castleQ"){board[m.t+1]=board[m.t-2];board[m.t-2]=null}
+ if(p.toLowerCase()==="k")castle=castle.replace(color==="w"?/[KQ]/g:/[kq]/g,"");
+ if(m.f===63||m.t===63)castle=castle.replace("K","");
+ if(m.f===56||m.t===56)castle=castle.replace("Q","");
+ if(m.f===7||m.t===7)castle=castle.replace("k","");
+ if(m.f===0||m.t===0)castle=castle.replace("q","");
+ ep=m.flag==="double"?String((m.f+m.t)/2):"-";
+ half=p.toLowerCase()==="p"||captured||m.flag==="ep"?0:half+1;
+ if(color==="b")full++;
+ turn=color==="w"?"b":"w";
+}
+function undoApply(s){loadFen(s)}
+function legal(){
+ const color=turn,ms=pseudo(),out=[];
+ for(const m of ms){const before=fen();apply(m);if(!inCheck(color))out.push(m);loadFen(before)}
+ return out
+}
+function san(m,all){
+ const p=board[m.f],capture=!!board[m.t]||m.flag==="ep";
+ if(m.flag==="castleK")return "O-O";
+ if(m.flag==="castleQ")return "O-O-O";
+ let s=p.toLowerCase()==="p"?(capture?"abcdefgh"[file(m.f)]:""):p.toUpperCase();
+ if(p.toLowerCase()!=="p"){
+  const same=all.filter(x=>x.f!==m.f&&x.t===m.t&&board[x.f]===p);
+  if(same.length)s+=(same.some(x=>file(x.f)===file(m.f))?"":"abcdefgh"[file(m.f)])+(same.some(x=>rank(x.f)===rank(m.f))?"":rank(m.f)===rank(m.f)?"":"");
+ }
+ return s+(capture?"x":"")+"abcdefgh"[file(m.t)]+(8-rank(m.t))+(m.promo?"="+m.promo.toUpperCase():"");
+}
+function move(m){
+ const all=legal(),real=all.find(x=>x.f===m.f&&x.t===m.t);
+ if(!real)return;
+ const note=san(real,all),before=fen();save();
+ apply(real);
+ history.push((turn==="b"?full+". ":full+"... ")+note);
+ selected=-1;targets=[];render();
+ if(checkEnd())return;
+ if($("mode").value==="computer"&&turn==="b")setTimeout(computerMove,180);
+}
+function checkEnd(){
+ const ms=legal();
+ if(!ms.length){gameOver=true;$("status").textContent=inCheck(turn)?"Checkmate! "+(turn==="w"?"Black":"White")+" wins!":"Draw by stalemate.";render();return true}
+ if(half>=100){$("status").textContent="50-move draw may be claimable."; }
+ if(half>=150){gameOver=true;$("status").textContent="Draw by 75-move rule.";return true}
+ if(insufficient()){gameOver=true;$("status").textContent="Draw by insufficient material.";return true}
+ $("status").textContent=(turn==="w"?"White":"Black")+" to move"+(inCheck(turn)?" — CHECK!":"");
+ return false
+}
+function insufficient(){
+ const p=board.filter(x=>x&&!"Kk".includes(x));
+ return p.length===0||(p.length===1&&"NnBb".includes(p[0]))||p.every(x=>"Bb".includes(x))&&new Set(board.map((p,i)=>p&&"Bb".includes(p)?(rank(i)+file(i))%2:null).filter(x=>x!==null)).size===1
+}
+function render(){
+ const el=$("board");el.innerHTML="";
+ for(let j=0;j<64;j++){
+  const i=flipped?63-j:(Math.floor(j/8)*8+(j%8));
+  const sq=document.createElement("button");sq.className="square "+((rank(i)+file(i))%2===0?"light":"dark");
+  if(i===selected)sq.classList.add("selected");
+  if(targets.includes(i))sq.classList.add(board[i]?"capture":"move");
+  if(board[i])sq.classList.add(side(board[i])==="w"?"whitepiece":"blackpiece");
+  sq.textContent=glyph[board[i]]||"";
+  if(file(i)===0)sq.insertAdjacentHTML("beforeend",'<span class="coord">'+(8-rank(i))+'</span>');
+  if(rank(i)===7)sq.insertAdjacentHTML("beforeend",'<span class="coord" style="left:auto;right:3px">'+ "abcdefgh"[file(i)]+'</span>');
+  sq.onclick=()=>tap(i);el.appendChild(sq)
+ }
+ $("history").textContent=history.length?history.join("   "):"No moves yet";
+}
+function tap(i){
+ if(gameOver||thinking)return;
+ if($("mode").value==="computer"&&turn==="b")return;
+ const ms=legal();
+ if(selected>=0&&targets.includes(i)){
+  const options=ms.filter(m=>m.f===selected&&m.t===i);
+  let m=options[0];
+  if(m&&m.promo){
+   const choice=prompt("Promote pawn to Q, R, B or N?","Q");
+   const q=(choice||"Q").toLowerCase();
+   m=options.find(x=>x.promo===(["q","r","b","n"].includes(q)?q:"q"))||m;
+  }
+  if(m)move(m);return
+ }
+ if(board[i]&&side(board[i])===turn){selected=i;targets=ms.filter(m=>m.f===i).map(m=>m.t);render()}
+ else{selected=-1;targets=[];render()}
+}
+const val={p:100,n:320,b:330,r:500,q:900,k:20000};
+function evaluate(){
+ let score=0;
+ for(let i=0;i<64;i++)if(board[i]){
+  let p=board[i],v=val[p.toLowerCase()]||0;
+  let center=3.5-(Math.abs(file(i)-3.5)+Math.abs(rank(i)-3.5))/2;
+  v+=center*5;
+  score+=side(p)==="b"?v:-v;
+ }
+ return score
+}
+function search(depth,alpha,beta){
+ const ms=legal();
+ if(!ms.length)return inCheck(turn)?(turn==="b"?-30000:30000):0;
+ if(depth===0)return evaluate();
+ ms.sort((a,b)=>(board[b.t]?val[board[b.t].toLowerCase()]:0)-(board[a.t]?val[board[a.t].toLowerCase()]:0));
+ let best=turn==="b"?-Infinity:Infinity;
+ for(const m of ms){
+  const before=fen();apply(m);
+  const score=search(depth-1,alpha,beta);
+  loadFen(before);
+  if(turn==="b"){best=Math.max(best,score);alpha=Math.max(alpha,best)}
+  else{best=Math.min(best,score);beta=Math.min(beta,best)}
+  if(beta<=alpha)break
+ }
+ return best
+}
+function computerMove(){
+ if(gameOver||turn!=="b"||$("mode").value!=="computer")return;
+ thinking=true;$("status").textContent="Wolf is thinking..."; 
+ setTimeout(()=>{
+  const ms=legal();if(!ms.length){thinking=false;checkEnd();return}
+  const depth=+$("level").value;
+  let best=-Infinity,choices=[];
+  for(const m of ms){
+   const before=fen();apply(m);
+   const score=search(depth-1,-Infinity,Infinity);
+   loadFen(before);
+   if(score>best){best=score;choices=[m]}else if(score===best)choices.push(m)
+  }
+  thinking=false;
+  move(choices[Math.floor(Math.random()*choices.length)]);
+ },50)
+}
+function undo(){
+ if(!snapshots.length)return;
+ restore(snapshots.pop());
+ if($("mode").value==="computer"&&turn==="b")undo()
+}
+function restart(){loadFen(START);history=[];snapshots=[];selected=-1;targets=[];gameOver=false;thinking=false;render();checkEnd()}
+function flipBoard(){flipped=!flipped;render()}
+$("mode").onchange=restart;
+$("level").onchange=()=>{};
+loadFen(START);render();checkEnd();
+</script>
+</body>
+  </html>
+  
